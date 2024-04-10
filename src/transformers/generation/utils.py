@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import numpy
 import copy
 import inspect
 import warnings
@@ -615,10 +615,20 @@ class GenerationMixin:
                     dict_to_expand[key] = dict_to_expand[key].repeat_interleave(expand_size, dim=0)
             return dict_to_expand
 
+        print("expand_inputs_: expand size, ", expand_size, "input_ids", input_ids.shape)
+
+        if 'inputs_embeds' in model_kwargs:
+            print("expand inputs_embeds: ", input_ids, model_kwargs['inputs_embeds'].shape)
+        
         if input_ids is not None:
             input_ids = input_ids.repeat_interleave(expand_size, dim=0)
 
         model_kwargs = _expand_dict_for_generation(model_kwargs)
+
+        if 'inputs_embeds' in model_kwargs:
+            print("expand inputs_embeds: ", input_ids, model_kwargs['inputs_embeds'].shape)
+        
+        print("expand inputs: inputs_ids ", input_ids.shape, "attention_mask", model_kwargs['attention_mask'].shape)
 
         if is_encoder_decoder:
             if model_kwargs.get("encoder_outputs") is None:
@@ -2984,6 +2994,7 @@ class GenerationMixin:
         num_beams = beam_scorer.num_beams
 
         batch_beam_size, cur_len = input_ids.shape
+        print("batch_beam_size, cur_len", batch_beam_size, cur_len)
 
         if num_beams * batch_size != batch_beam_size:
             raise ValueError(
@@ -3028,7 +3039,7 @@ class GenerationMixin:
                     break
 
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
+            #print("model_inputs:", model_inputs)
             # if sequential is True, split the input to batches of batch_size and run sequentially
             if sequential:
                 if any(
@@ -3139,10 +3150,13 @@ class GenerationMixin:
             model_kwargs = self._update_model_kwargs_for_generation(
                 outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
             )
+
             if model_kwargs["past_key_values"] is not None:
                 model_kwargs["past_key_values"] = self._temporary_reorder_cache(
                     model_kwargs["past_key_values"], beam_idx
                 )
+                print("pas_key_value:",  model_kwargs["past_key_values"][0][0].shape)
+                print("input_ids", input_ids.shape)
 
             if return_dict_in_generate and output_scores:
                 beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
