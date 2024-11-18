@@ -19,6 +19,7 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
+import os
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -2989,10 +2990,11 @@ class GenerationMixin:
 
         # keep track of which sequences are already finished
         batch_size, cur_len = input_ids.shape
+        input_tokens_number = cur_len
         this_peer_finished = False
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
-
+        
         while self._has_unfinished_sequences(
             this_peer_finished, synced_gpus, device=input_ids.device, cur_len=cur_len, max_length=max_length
         ):
@@ -3003,7 +3005,12 @@ class GenerationMixin:
             model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
             model_inputs.update({"output_hidden_states": output_hidden_states} if output_hidden_states else {})
 
+            # set the token index to be generated in the env
+
             # forward pass to get next token
+            cur_token_index = cur_len - input_tokens_number
+            os.environ['HF_DEBUG_TOKEN_INDEX'] = str(cur_token_index)
+
             outputs = self(**model_inputs, return_dict=True)
 
             if synced_gpus and this_peer_finished:

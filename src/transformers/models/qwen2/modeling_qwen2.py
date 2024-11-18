@@ -21,6 +21,7 @@
 
 import math
 from typing import List, Optional, Tuple, Union
+import os
 
 import torch
 import torch.utils.checkpoint
@@ -717,6 +718,23 @@ class Qwen2DecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
+        # dump hidden_states by layer by token
+        is_dump_tensor = os.environ.get('HF_DEBUG_DUMP_LAYER', 1)
+
+        if is_dump_tensor == 1:
+            device = hidden_states.device.type
+            output_tensor_filename = "token." \
+                                    + os.environ.get('HF_DEBUG_TOKEN_INDEX') \
+                                    + "." \
+                                    + "layer" \
+                                    + "." \
+                                    + os.environ.get('HF_DEBUG_LAYER_INDEX') \
+                                    + "." \
+                                    + device \
+                                    + ".pt"
+            logger.debug("dump layer hidden_states: ", output_tensor_filename)
+            torch.save(hidden_states.to("cpu"), output_tensor_filename)
+
         outputs = (hidden_states,)
 
         if output_attentions:
@@ -956,6 +974,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
+        # record layer index
+        layer_index = 0
         for decoder_layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -973,6 +993,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
                     position_embeddings,
                 )
             else:
+                # set layer index to env
+                os.environ['HF_DEBUG_LAYER_INDEX'] = str(layer_index)
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=causal_mask,
@@ -983,6 +1005,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                 )
+                layer_index = layer_index + 1
 
             hidden_states = layer_outputs[0]
 
