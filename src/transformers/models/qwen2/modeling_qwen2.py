@@ -62,6 +62,27 @@ logger = logging.get_logger(__name__)
 _CHECKPOINT_FOR_DOC = "Qwen/Qwen2-7B-beta"
 _CONFIG_FOR_DOC = "Qwen2Config"
 
+def _dump_tensor(tensor, name):
+    is_dump_tensor = os.environ.get('HF_DEBUG_DUMP_LAYER', 1)
+
+    if is_dump_tensor == 0:
+        return
+
+    device = tensor.device.type
+    output_tensor_filename = "token." \
+                            + os.environ.get('HF_DEBUG_TOKEN_INDEX') \
+                            + "." \
+                            + "layer" \
+                            + "." \
+                            + os.environ.get('HF_DEBUG_LAYER_INDEX') \
+                            + "." \
+                            + name \
+                            + "." \
+                            + device \
+                            + ".pt"
+    logger.debug("dump layer hidden_states: ", output_tensor_filename)
+    torch.save(tensor.to("cpu"), output_tensor_filename)
+
 
 # Copied from transformers.models.llama.modeling_llama._prepare_4d_causal_attention_mask_with_cache_position
 def _prepare_4d_causal_attention_mask_with_cache_position(
@@ -346,6 +367,10 @@ class Qwen2Attention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
+        _dump_tensor(query_states, "attn_q_proj")
+        _dump_tensor(key_states, "attn_k_proj")
+        _dump_tensor(value_states, "attn_v_proj")
+
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -361,6 +386,9 @@ class Qwen2Attention(nn.Module):
         else:
             cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        
+        _dump_tensor(query_states, "attn_rotary_emb_query_states")
+        _dump_tensor(key_states, "attn_rotary_emb_key_states")
 
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
@@ -371,14 +399,21 @@ class Qwen2Attention(nn.Module):
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        
+        _dump_tensor(attn_weights, "attn_matmul_qk")
+
         if attention_mask is not None:  # no matter the length, we just slice it
             causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
             attn_weights = attn_weights + causal_mask
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        
+        _dump_tensor(attn_weights, "attn_softmax")
+
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
+        _dump_tensor(attn_weights, "attn_matmul_v")
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
@@ -390,6 +425,7 @@ class Qwen2Attention(nn.Module):
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
         attn_output = self.o_proj(attn_output)
+        _dump_tensor(attn_output, "attn_o_proj")
 
         if not output_attentions:
             attn_weights = None
@@ -698,6 +734,9 @@ class Qwen2DecoderLayer(nn.Module):
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
+        
+        # dump input layer norm
+        _dump_tensor(hidden_states, "input_layernorm")
 
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -710,31 +749,29 @@ class Qwen2DecoderLayer(nn.Module):
             cache_position=cache_position,
             position_embeddings=position_embeddings,
         )
+
+        # dump self_attn
+        _dump_tensor(hidden_states, "self_attn")
+        # before residual + hidden_states
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        
+        # dump post attn layernorm
+        _dump_tensor(hidden_states, "post_attention_layernorm")
+        
         hidden_states = self.mlp(hidden_states)
+        
+        # dump mlp
+        _dump_tensor(hidden_states, "mlp")
+        
         hidden_states = residual + hidden_states
 
-        # dump hidden_states by layer by token
-        is_dump_tensor = os.environ.get('HF_DEBUG_DUMP_LAYER', 1)
-
-        if is_dump_tensor == 1:
-            device = hidden_states.device.type
-            output_tensor_filename = "token." \
-                                    + os.environ.get('HF_DEBUG_TOKEN_INDEX') \
-                                    + "." \
-                                    + "layer" \
-                                    + "." \
-                                    + os.environ.get('HF_DEBUG_LAYER_INDEX') \
-                                    + "." \
-                                    + device \
-                                    + ".pt"
-            logger.debug("dump layer hidden_states: ", output_tensor_filename)
-            torch.save(hidden_states.to("cpu"), output_tensor_filename)
-
+        # dump mlp
+        _dump_tensor(hidden_states, "decoder")
+        
         outputs = (hidden_states,)
 
         if output_attentions:
